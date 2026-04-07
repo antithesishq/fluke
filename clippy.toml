@@ -1,0 +1,4 @@
+disallowed-types = [
+  { path = "std::path::Path", reason = "use `crate::RelativePath` or `crate::AbsolutePath` instead" },
+  { path = "std::path::PathBuf", reason = "use `crate::RelativePath` or `crate::AbsolutePath` instead" },
+]

@@ -1,0 +1,221 @@
+diff --git a/lix/libexpr/eval.cc b/lix/libexpr/eval.cc
+index 32d81998ad..1c73b90f21 100644
+--- a/lix/libexpr/eval.cc
++++ b/lix/libexpr/eval.cc
+@@ -1,5 +1,6 @@
+ #include "lix/libexpr/eval.hh"
+ #include "lix/libexpr/eval-settings.hh"
++#include "lix/libexpr/impurity.hh"
+ #include "lix/libstore/path.hh"
+ #include "lix/libutil/archive.hh"
+ #include "lix/libutil/ansicolor.hh"
+@@ -1608,6 +1609,10 @@
+     }
+ 
+     if (v.type() == nPath) {
++        if (!(!canonicalizePath && !copyToStore) && copyToStore) {
++            logImpurity(JSON({{"source", "path"}, {"path", v.path().to_string()}}));
++        }
++
+         return !canonicalizePath && !copyToStore
+             // FIXME: hack to preserve path literals that end in a slash, as in /foo/${x}.
+             ? std::string(v.string().content->str())
+diff --git a/lix/libexpr/impurity.hh b/lix/libexpr/impurity.hh
+new file mode 100644
+index 0000000000..9d8a14fad6
+--- /dev/null
++++ b/lix/libexpr/impurity.hh
+@@ -0,0 +1,26 @@
++#pragma once
++///@file
++
++#include "lix/libexpr/eval-settings.hh"
++#include "lix/libutil/c-calls.hh"
++#include "lix/libutil/json.hh"
++#include "lix/libutil/file-system.hh"
++#include <cstdio>
++
++namespace nix {
++    static AutoCloseFD openForWriteAppend(const Path & path, mode_t mode)
++    {
++        AutoCloseFD fd{sys::open(path, O_WRONLY | O_CLOEXEC | O_EXCL, mode)};
++        if (!fd)
++            throw SysError("opening file '%1%'", path);
++        // TODO(winter): why is this load-bearing iff line lengths aren't equal?
++        lseek(fd.get(), 0, SEEK_END);
++        return fd;
++    }
++
++    static inline void logImpurity(JSON j) {
++        if (evalSettings.impuritySock == "") return;
++        auto impurityFD = openForWriteAppend(evalSettings.impuritySock, 0666);
++        writeFile(impurityFD, fmt("%s\n", j));
++    }
++}
+diff --git a/lix/libexpr/meson.build b/lix/libexpr/meson.build
+index 4659cbbcfe..b6c1ee592c 100644
+--- a/lix/libexpr/meson.build
++++ b/lix/libexpr/meson.build
+@@ -24,6 +24,7 @@
+   'settings/eval-cache.md',
+   'settings/eval-system.md',
+   'settings/ignore-try.md',
++  'settings/impurity-sock.md',
+   'settings/max-call-depth.md',
+   'settings/nix-path.md',
+   'settings/pure-eval.md',
+@@ -257,6 +258,7 @@
+   'gc-alloc.hh',
+   'gc-small-vector.hh',
+   'get-drvs.hh',
++  'impurity.hh',
+   'json-to-value.hh',
+   'nixexpr.hh',
+   'parser/change_head.hh',
+diff --git a/lix/libexpr/primops.cc b/lix/libexpr/primops.cc
+index 51d8106a71..d489a82264 100644
+--- a/lix/libexpr/primops.cc
++++ b/lix/libexpr/primops.cc
+@@ -3,13 +3,13 @@
+ #include "lix/libexpr/eval.hh"
+ #include "lix/libexpr/eval-settings.hh"
+ #include "lix/libexpr/extra-primops.hh"
++#include "lix/libexpr/impurity.hh"
+ #include "lix/libexpr/gc-small-vector.hh"
+ #include "lix/libstore/globals.hh"
+ #include "lix/libexpr/json-to-value.hh"
+ #include "lix/libstore/names.hh"
+ #include "lix/libstore/path-references.hh"
+ #include "lix/libutil/async.hh"
+-#include "lix/libutil/json.hh"
+ #include "lix/libutil/processes.hh"
+ #include "lix/libstore/store-api.hh"
+ #include "lix/libexpr/value-to-json.hh"
+@@ -17,6 +17,7 @@
+ #include "lix/libexpr/primops.hh"
+ #include "lix/libfetchers/fetch-to-store.hh"
+ #include "lix/libutil/c-calls.hh"
++#include "lix/libutil/json.hh"
+ #include "lix/libutil/regex.hh"
+ #include "lix/libutil/types.hh"
+ #include "value.hh"
+@@ -165,6 +166,7 @@
+ static void import(EvalState & state, Value & vPath, Value * vScope, Value & v)
+ {
+     auto path = realisePath(state, vPath);
++    logImpurity(JSON({{"source", "import"}, {"path", path.to_string()}}));
+     auto path2 = path.canonical().abs();
+ 
+     // FIXME
+@@ -738,7 +740,9 @@
+ static void prim_getEnv(EvalState & state, Value * * args, Value & v)
+ {
+     std::string name(state.forceStringNoCtx(*args[0], noPos, "while evaluating the first argument passed to builtins.getEnv"));
+-    v.mkString(evalSettings.restrictEval || evalSettings.pureEval ? "" : getEnv(name).value_or(""));
++    auto res = evalSettings.restrictEval || evalSettings.pureEval ? "" : getEnv(name).value_or("");
++    logImpurity({{"source", "getEnv"}, {"name", name}, {"value", res}});
++    v.mkString(res);
+ }
+ 
+ /* Evaluate the first argument, then return the second argument. */
+@@ -1397,6 +1401,7 @@
+ {
+     auto path = realisePath(state, *args[0]);
+     auto s = path.readFile();
++    logImpurity(JSON({{"source", "readFile"}, {"path", path.to_string()}}));
+     StorePathSet refs;
+     if (state.ctx.store->isInStore(path.canonical().abs())) {
+         try {
+@@ -1493,6 +1498,7 @@
+         state.ctx.errors.make<EvalError>("unknown hash type '%1%'", type).debugThrow();
+ 
+     auto path = realisePath(state, *args[1]);
++    logImpurity(JSON({{"source", "hashFile"}, {"path", path.to_string()}}));
+ 
+     v.mkString(hashString(*ht, path.readFile()).to_string(HashFormat::Base16, false));
+ }
+@@ -1509,6 +1515,7 @@
+ static void prim_readFileType(EvalState & state, Value * * args, Value & v)
+ {
+     auto path = realisePath(state, *args[0]);
++    logImpurity(JSON({{"source", "readFileType"}, {"path", path.to_string()}}));
+     /* Retrieve the directory entry type and stringize it. */
+     v.mkString(fileTypeToString(path.lstat().type));
+ }
+@@ -1517,6 +1524,7 @@
+ static void prim_readDir(EvalState & state, Value * * args, Value & v)
+ {
+     auto path = realisePath(state, *args[0]);
++    logImpurity(JSON({{"source", "readDir"}, {"path", path.to_string()}}));
+ 
+     // Retrieve directory entries for all nodes in a directory.
+     // This is similar to `getFileType` but is optimized to reduce system calls
+@@ -1682,7 +1690,13 @@
+             Value res;
+             state.callFunction(*filterFun, args, res, noPos);
+ 
+-            return state.forceBool(res, noPos, "while evaluating the return value of the path filter function");
++            bool resB = state.forceBool(res, noPos, "while evaluating the return value of the path filter function");
++
++            if (resB) {
++                logImpurity(JSON({{"source", "path/filter"}, {"path", p}}));
++            }
++
++            return resB;
+         }) : defaultPathFilter;
+ 
+         std::optional<StorePath> expectedStorePath;
+@@ -1725,6 +1739,7 @@
+     NixStringContext context;
+     auto path = state.coerceToPath(noPos, *args[1], context,
+         "while evaluating the second argument (the path to filter) passed to builtins.filterSource");
++    logImpurity(JSON({{"source", "filterSource"}, {"path", path.to_string()}}));
+     state.forceFunction(*args[0], noPos, "while evaluating the first argument passed to builtins.filterSource");
+     addPath(state, path.baseName(), path.canonical().abs(), args[0], FileIngestionMethod::Recursive, std::nullopt, v, context);
+ }
+@@ -1789,6 +1804,7 @@
+         state.ctx.errors.make<EvalError>(
+             "missing required 'path' attribute in the first argument to builtins.path"
+         ).debugThrow();
++    logImpurity(JSON({{"source", "path"}, {"path", path->to_string()}, {"filter", filterFun != nullptr}}));
+     if (name.empty())
+         name = path->baseName();
+ 
+diff --git a/lix/libexpr/settings/impurity-sock.md b/lix/libexpr/settings/impurity-sock.md
+new file mode 100644
+index 0000000000..dd79d4e676
+--- /dev/null
++++ b/lix/libexpr/settings/impurity-sock.md
+@@ -0,0 +1,7 @@
++---
++name: impurity-sock
++internalName: impuritySock
++type: std::string
++default: ''
++---
++For cyclopes.
+diff --git a/lix/libutil/file-system.cc b/lix/libutil/file-system.cc
+index 1beccf7ee2..bc7758080a 100644
+--- a/lix/libutil/file-system.cc
++++ b/lix/libutil/file-system.cc
+@@ -363,7 +363,7 @@
+     }(std::move(fd));
+ }
+ 
+-static AutoCloseFD openForWrite(const Path & path, mode_t mode)
++AutoCloseFD openForWrite(const Path & path, mode_t mode)
+ {
+     AutoCloseFD fd{sys::open(path, O_WRONLY | O_TRUNC | O_CREAT | O_CLOEXEC, mode)};
+     if (!fd)
+diff --git a/lix/libutil/file-system.hh b/lix/libutil/file-system.hh
+index c051555949..e0aec873c4 100644
+--- a/lix/libutil/file-system.hh
++++ b/lix/libutil/file-system.hh
+@@ -192,6 +192,7 @@
+ void writeFile(
+     const Path & path, std::string_view s, mode_t mode = 0666, bool allowInterrupts = true
+ );
++AutoCloseFD openForWrite(const Path & path, mode_t mode);
+ /** Write a string to an exclusively-opened file. */
+ void writeFileExcl(
+     const Path & path, std::string_view s, mode_t mode = 0666, bool allowInterrupts = true

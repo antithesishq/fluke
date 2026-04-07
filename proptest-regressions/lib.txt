@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8b60ec895ee0afcc080322294657286fc5fb279c19c6a685c2853febfb26abde # shrinks to expr = Bool(false)
+cc dd94cf3db77db6a3ee6aec387750a2cb53b5ab93a686ad8e84c84d0d745e720d # shrinks to expr = Import("aaaaaaaa", Bool(false))
+cc df6178b130e423022f51d167701c60d298d47dffac3f53444a9a429cdfef0b78 # shrinks to expr = Array([Import("aaaaaaaa", Bool(false))])
+cc c5bac07f662f318c703e2c04081d0392c87807d1db1c5c53c62d7efe8083a9ac # shrinks to expr = Import("aaaaaaaa", Import("aaaaaaaa", Bool(false)))
+cc 5331d49cb8d01e91165a0be41bee59ed5b87c4a2f9ab005e152cbf58473e4fcb # shrinks to expr = Array([AttrSet({"if": Bool(false)})])

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc efd85f31a20a4aeb5b4cde6ae6f0563f98c2124c32a73ccaecbb068691b911c1 # shrinks to (initial_state, transitions, seen_counter) = (RefState { invalidated: false }, [ModifyEnvVar, Check], None)
