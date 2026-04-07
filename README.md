@@ -1,8 +1,8 @@
 # Fluke
 
 > [!NOTE]
-> This is a tool developed for internal use, and is not an official Antithesis product.
-> With that being said, it's something we thought was cool enough to release, and we hope you can use it (or at least take some ideas from it)!
+> This is a tool developed for internal use, not an official Antithesis product.
+> That said, we thought it was cool enough to release, and we hope you can use it (or at least take some ideas from it)!
 
 Fluke is a tracing-based Nix evaluation cacher, which tracks a given evaluation's impurities, then looks for changes to them upon subsequent evals (primarily by using [Watchman](https://facebook.github.io/watchman/)).
 
